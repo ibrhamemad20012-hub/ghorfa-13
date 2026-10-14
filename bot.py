@@ -1,40 +1,107 @@
-
 import os
 import random
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+)
 
 rooms = {}
 
-CASES = [
-    {
-        "story": "اختفت وثيقة سرية من غرفة مغلقة. ثلاثة أشخاص دخلوا المبنى تلك الليلة. من السارق؟",
-        "suspects": ["الحارس", "السكرتير", "الطبيب"],
-        "answer": "السكرتير",
-    },
-    {
-        "story": "انطفأت الأنوار في المتحف واختفى مفتاح الخزنة. من أخذه؟",
-        "suspects": ["المرشد", "المصور", "المدير"],
-        "answer": "المصور",
-    },
-    {
-        "story": "وصلت رسالة مجهولة قبل منتصف الليل. الشخص الذي أرسلها يعرف سر الجميع. من هو؟",
-        "suspects": ["الجار", "السائق", "المحاسب"],
-        "answer": "السائق",
-    },
-]
-
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [InlineKeyboardButton("🚪 إنشاء غرفة", callback_data="create")],
-        [InlineKeyboardButton("🔎 الانضمام لغرفة", callback_data="join")],
-        [InlineKeyboardButton("📜 طريقة اللعب", callback_data="help")],
-    ]
     await update.message.reply_text(
-        "🕯️ أهلاً بك في الغرفة 13\n"
-        "لعبة الغموض والتحقيق الجماعية.\n\n"
-        "أنشئ غرفة وادعُ أصدقاءك!",
+        "🕯️ أهلاً بك في الغرفة 13!\n\n"
+        "لعبة غموض وتحقيق جماعية 🔎\n\n"
+        "الأوامر:\n"
+        "/newroom - إنشاء غرفة جديدة\n"
+        "/join - الانضمام للعبة\n"
+        "/startgame - بدء التحقيق\n\n"
+        "👥 اجمعوا اللاعبين داخل المجموعة وابدؤوا!"
+    )
+
+
+async def new_room(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+
+    rooms[chat_id] = {
+        "players": {},
+        "votes": {},
+        "killer": None,
+        "playing": False,
+    }
+
+    await update.message.reply_text(
+        "🚪 تم فتح الغرفة 13!\n\n"
+        "على اللاعبين الانضمام بالأمر /join\n"
+        "عندما تكونون مستعدين، استخدموا /startgame"
+    )
+
+
+async def join_room(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    user = update.effective_user
+
+    if chat_id not in rooms:
+        await update.message.reply_text(
+            "🚪 ماكو غرفة مفتوحة!\nاستخدم /newroom أولاً."
+        )
+        return
+
+    room = rooms[chat_id]
+
+    if room["playing"]:
+        await update.message.reply_text(
+            "🔒 اللعبة بدأت بالفعل، انتظر الجولة القادمة."
+        )
+        return
+
+    room["players"][user.id] = user.full_name
+
+    await update.message.reply_text(
+        f"👤 انضم {user.full_name} إلى الغرفة 13!\n"
+        f"عدد اللاعبين: {len(room['players'])}"
+    )
+
+
+async def start_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+
+    if chat_id not in rooms:
+        await update.message.reply_text(
+            "🚪 أنشئ غرفة أولاً باستخدام /newroom"
+        )
+        return
+
+    room = rooms[chat_id]
+
+    if len(room["players"]) < 2:
+        await update.message.reply_text(
+            "👥 تحتاجون لاعبين على الأقل لبدء التحقيق!"
+        )
+        return
+
+    room["killer"] = random.choice(list(room["players"].keys()))
+    room["votes"] = {}
+    room["playing"] = True
+
+    keyboard = []
+
+    for player_id, name in room["players"].items():
+        keyboard.append([
+            InlineKeyboardButton(
+                f"🔎 {name}",
+                callback_data=f"vote:{player_id}"
+            )
+        ])
+
+    await update.message.reply_text(
+        "🌑 بدأت أحداث الغرفة 13...\n\n"
+        "حدث أمر غامض، وأحد الموجودين يخفي الحقيقة!\n"
+        "🕵️ اختاروا الشخص الذي تشكون به.\n\n"
+        "كل لاعب يصوّت مرة واحدة.",
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
@@ -42,166 +109,118 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    user = query.from_user
 
-    if query.data == "create":
-        code = str(random.randint(1000, 9999))
-        while code in rooms:
-            code = str(random.randint(1000, 9999))
+    chat_id = query.message.chat.id
+    user_id = query.from_user.id
+    data = query.data
 
-        rooms[code] = {
-            "players": {user.id: user.first_name},
-            "case": random.choice(CASES),
-            "votes": {},
-            "started": False,
-        }
+    if chat_id not in rooms:
+        await query.answer("الغرفة غير موجودة.", show_alert=True)
+        return
 
-        await query.edit_message_text(
-            f"🚪 تم إنشاء الغرفة!\n"
-            f"رمز الغرفة: {code}\n\n"
-            f"أرسل لأصدقائك:\n/join {code}\n\n"
-            f"لبدء اللعبة:\n/startgame {code}"
+    room = rooms[chat_id]
+
+    if not room["playing"]:
+        await query.answer("ماكو تحقيق فعّال حالياً.", show_alert=True)
+        return
+
+    if user_id not in room["players"]:
+        await query.answer(
+            "انضم للعبة أولاً باستخدام /join",
+            show_alert=True,
         )
+        return
 
-    elif query.data == "join":
-        await query.edit_message_text(
-            "للانضمام أرسل الأمر مع رمز الغرفة:\n/join 1234"
+    if not data.startswith("vote:"):
+        return
+
+    suspect_id = int(data.split(":")[1])
+
+    if suspect_id not in room["players"]:
+        await query.answer("هذا اللاعب غير موجود.", show_alert=True)
+        return
+
+    room["votes"][user_id] = suspect_id
+
+    await query.answer("✅ تم تسجيل تصويتك!")
+
+    total_players = len(room["players"])
+    total_votes = len(room["votes"])
+
+    if total_votes < total_players:
+        await query.message.reply_text(
+            f"🗳️ تم تسجيل تصويت جديد!\n"
+            f"التصويتات: {total_votes}/{total_players}"
         )
-
-    elif query.data == "help":
-        await query.edit_message_text(
-            "🕵️ طريقة اللعب:\n"
-            "1. أنشئ غرفة.\n"
-            "2. ادعُ أصدقاءك.\n"
-            "3. ابدأ التحقيق بالأمر /startgame رمز_الغرفة.\n"
-            "4. صوّت للمشتبه به."
-        )
-
-    elif query.data.startswith("vote:"):
-        _, code, suspect = query.data.split(":", 2)
-        room = rooms.get(code)
-
-        if not room or not room["started"]:
-            await query.edit_message_text("انتهت هذه الجولة أو الغرفة غير موجودة.")
-            return
-
-        if query.from_user.id not in room["players"]:
-            await query.edit_message_text("أنت لست لاعباً في هذه الغرفة.")
-            return
-
-        room["votes"][query.from_user.id] = suspect
-        await query.edit_message_text(f"✅ تم تسجيل تصويتك: {suspect}")
-
-        if len(room["votes"]) >= len(room["players"]):
-            counts = {}
-            for choice in room["votes"].values():
-                counts[choice] = counts.get(choice, 0) + 1
-
-            highest = max(counts.values())
-            winners = [name for name, count in counts.items() if count == highest]
-            answer = room["case"]["answer"]
-
-            if len(winners) > 1:
-                result = "تعادل في التصويت!"
-            elif winners[0] == answer:
-                result = f"🎉 أحسنتم! اكتشفتم المشتبه به: {answer}"
-            else:
-                result = f"❌ لم تنجحوا! المشتبه به الصحيح هو: {answer}"
-
-            for player_id in room["players"]:
-                try:
-                    await context.bot.send_message(
-                        chat_id=player_id,
-                        text=f"🏁 انتهت الجولة!\n{result}",
-                    )
-                except Exception:
-                    pass
-
-            room["started"] = False
-
-
-async def join_room(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("استخدم: /join رمز_الغرفة")
         return
 
-    code = context.args[0]
-    room = rooms.get(code)
+    counts = {}
 
-    if not room:
-        await update.message.reply_text("❌ الغرفة غير موجودة.")
-        return
+    for voted_id in room["votes"].values():
+        counts[voted_id] = counts.get(voted_id, 0) + 1
 
-    user = update.effective_user
-
-    if room["started"]:
-        await update.message.reply_text("الجولة بدأت بالفعل.")
-        return
-
-    room["players"][user.id] = user.first_name
-
-    names = "\n".join(room["players"].values())
-    await update.message.reply_text(
-        f"✅ انضممت للغرفة {code}!\n\n"
-        f"اللاعبون:\n{names}\n\n"
-        f"ابدأ اللعبة بالأمر:\n/startgame {code}"
-    )
-
-
-async def start_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("استخدم: /startgame رمز_الغرفة")
-        return
-
-    code = context.args[0]
-    room = rooms.get(code)
-
-    if not room:
-        await update.message.reply_text("❌ الغرفة غير موجودة.")
-        return
-
-    if len(room["players"]) < 2:
-        await update.message.reply_text("تحتاج إلى لاعبين اثنين على الأقل.")
-        return
-
-    if room["started"]:
-        await update.message.reply_text("الجولة بدأت بالفعل.")
-        return
-
-    room["started"] = True
-    room["votes"] = {}
-    case = room["case"]
-
-    keyboard = [
-        [InlineKeyboardButton(name, callback_data=f"vote:{code}:{name}")]
-        for name in case["suspects"]
+    max_votes = max(counts.values())
+    suspects = [
+        player_id
+        for player_id, count in counts.items()
+        if count == max_votes
     ]
 
-    for player_id in room["players"]:
-        try:
-            await context.bot.send_message(
-                chat_id=player_id,
-                text=f"🕵️ بدأت القضية!\n\n{case['story']}\n\nمن المشتبه به؟",
-                reply_markup=InlineKeyboardMarkup(keyboard),
-            )
-        except Exception:
-            pass
+    chosen = random.choice(suspects)
+    killer = room["killer"]
 
-    await update.message.reply_text("🔍 أرسلت القضية للاعبين.")
+    if chosen == killer:
+        result = (
+            "🎉 أحسنتم يا محققين!\n"
+            f"🔒 كشفتم المجرم: {room['players'][killer]}\n"
+            "انتهى التحقيق بنجاح!"
+        )
+    else:
+        result = (
+            "🌑 انتهى التحقيق...\n"
+            f"❌ اتهمتم: {room['players'][chosen]}\n"
+            f"🩸 الحقيقة كانت: {room['players'][killer]}\n"
+            "لقد أفلت المجرم هذه المرة!"
+        )
+
+    room["playing"] = False
+
+    await query.message.reply_text(
+        "📊 انتهى التصويت!\n\n" + result +
+        "\n\nلبدء جولة جديدة استخدموا /startgame"
+    )
 
 
 def main():
     token = os.environ.get("BOT_TOKEN")
+
     if not token:
-        raise RuntimeError("أضف BOT_TOKEN في متغيرات البيئة.")
+        raise RuntimeError("أضف BOT_TOKEN في متغيرات Render.")
+
+    base_url = os.environ.get("RENDER_EXTERNAL_URL")
+
+    if not base_url:
+        raise RuntimeError(
+            "هذا البوت يحتاج إلى تشغيله على Render Web Service."
+        )
 
     app = Application.builder().token(token).build()
+
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("newroom", new_room))
     app.add_handler(CommandHandler("join", join_room))
     app.add_handler(CommandHandler("startgame", start_game))
     app.add_handler(CallbackQueryHandler(button))
+
     print("الغرفة 13 تعمل!")
-    app.run_polling()
+
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=int(os.environ.get("PORT", "10000")),
+        url_path=token,
+        webhook_url=f"{base_url.rstrip('/')}/{token}",
+        drop_pending_updates=True,
+    )
 
 
 if __name__ == "__main__":
